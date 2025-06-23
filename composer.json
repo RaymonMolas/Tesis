@@ -1,0 +1,12 @@
+{
+    "name": "taller/mecanico",
+    "description": "Sistema de Taller Mecanico",
+    "authors": [
+        {
+            "name": "Taller Mecanico"
+        }
+    ],
+    "require": {
+        "tecnickcom/tcpdf": "^6.9"
+    }
+}
