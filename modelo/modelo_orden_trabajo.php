@@ -1,22 +1,23 @@
 <?php
+
 require_once "conexion.php";
 
-class ModeloOrdenTrabajo {
+class ModeloOrdenTrabajo
+{
     // Listar todas las órdenes de trabajo
-    static public function mdlListarOrdenesTrabajo() {
+    static public function mdlListarOrdenesTrabajo()
+    {
         try {
             $stmt = Conexion::conectar()->prepare("
-                SELECT ot.*, 
-                       v.marca, v.modelo, v.matricula,
-                       c.nombre as nombre_cliente,
+                SELECT o.*, v.matricula, v.marca, v.modelo, 
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
                        p.nombre as nombre_personal
-                FROM ordentrabajo ot
-                INNER JOIN vehiculo v ON ot.id_vehiculo = v.id_vehiculo
+                FROM ordentrabajo o
+                INNER JOIN vehiculo v ON o.id_vehiculo = v.id_vehiculo
                 INNER JOIN cliente c ON v.id_cliente = c.id_cliente
-                INNER JOIN personal p ON ot.id_personal = p.id_personal
-                ORDER BY ot.fecha_ingreso DESC
+                INNER JOIN personal p ON o.id_personal = p.id_personal
+                ORDER BY o.fecha_ingreso DESC
             ");
-            
             $stmt->execute();
             return $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (PDOException $e) {
@@ -26,21 +27,19 @@ class ModeloOrdenTrabajo {
     }
 
     // Obtener una orden específica
-    static public function mdlObtenerOrdenTrabajo($id) {
+    static public function mdlObtenerOrdenTrabajo($id)
+    {
         try {
             $stmt = Conexion::conectar()->prepare("
-SELECT ot.*, 
-       v.marca, v.modelo, v.matricula,
-       c.id_cliente,
-       c.nombre as nombre_cliente,
-       p.nombre as nombre_personal
-FROM ordentrabajo ot
-INNER JOIN vehiculo v ON ot.id_vehiculo = v.id_vehiculo
-INNER JOIN cliente c ON v.id_cliente = c.id_cliente
-INNER JOIN personal p ON ot.id_personal = p.id_personal
-WHERE ot.id_orden = :id
+                SELECT o.*, v.matricula, v.marca, v.modelo, v.id_cliente,
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
+                       p.nombre as nombre_personal
+                FROM ordentrabajo o
+                INNER JOIN vehiculo v ON o.id_vehiculo = v.id_vehiculo
+                INNER JOIN cliente c ON v.id_cliente = c.id_cliente
+                INNER JOIN personal p ON o.id_personal = p.id_personal
+                WHERE o.id_orden = :id
             ");
-            
             $stmt->bindParam(":id", $id, PDO::PARAM_INT);
             $stmt->execute();
             return $stmt->fetch(PDO::FETCH_ASSOC);
@@ -50,7 +49,7 @@ WHERE ot.id_orden = :id
         }
     }
 
-    // Registrar nueva orden - CORRECCIÓN PRINCIPAL
+    // Registrar nueva orden
     static public function mdlRegistrarOrdenTrabajo($datos) {
         try {
             $pdo = Conexion::conectar();
@@ -71,33 +70,24 @@ WHERE ot.id_orden = :id
             $stmt->bindParam(":estado", $datos["estado"], PDO::PARAM_STR);
             $stmt->bindParam(":observaciones", $datos["observaciones"], PDO::PARAM_STR);
 
-            // Debug: Log de los datos que se van a insertar
-            error_log("Insertando orden con datos: " . print_r($datos, true));
-
             if ($stmt->execute()) {
                 $id_insertado = $pdo->lastInsertId();
-                error_log("Orden insertada con ID: " . $id_insertado);
                 
                 // Verificar que el ID es válido
                 if ($id_insertado && $id_insertado > 0) {
                     // Confirmar transacción
                     $pdo->commit();
-                    // IMPORTANTE: Devolver el ID directamente
                     return $id_insertado;
                 } else {
-                    error_log("Error: lastInsertId devolvió: " . var_export($id_insertado, true));
                     $pdo->rollBack();
                     return "error";
                 }
             } else {
-                error_log("Error en execute() de la orden");
-                error_log("Error info: " . print_r($stmt->errorInfo(), true));
                 $pdo->rollBack();
                 return "error";
             }
         } catch (PDOException $e) {
             error_log("Error en mdlRegistrarOrdenTrabajo: " . $e->getMessage());
-            error_log("SQL State: " . $e->getCode());
             
             // Rollback si hay transacción activa
             if (isset($pdo) && $pdo->inTransaction()) {
@@ -107,9 +97,6 @@ WHERE ot.id_orden = :id
             return "error";
         }
     }
-
-    // ELIMINAR ESTA FUNCIÓN - Ya no es necesaria
-    // static public function mdlObtenerUltimoId() { ... }
 
     // Actualizar orden
     static public function mdlActualizarOrdenTrabajo($datos) {
@@ -136,17 +123,40 @@ WHERE ot.id_orden = :id
         }
     }
 
+    // Actualizar solo el estado
+    static public function mdlActualizarEstado($datos) {
+        try {
+            $sql = "UPDATE ordentrabajo SET estado = :estado";
+            
+            if (isset($datos["fecha_salida"]) && $datos["fecha_salida"] !== null) {
+                $sql .= ", fecha_salida = :fecha_salida";
+            }
+            
+            $sql .= " WHERE id_orden = :id_orden";
+            
+            $stmt = Conexion::conectar()->prepare($sql);
+            $stmt->bindParam(":id_orden", $datos["id_orden"], PDO::PARAM_INT);
+            $stmt->bindParam(":estado", $datos["estado"], PDO::PARAM_STR);
+            
+            if (isset($datos["fecha_salida"]) && $datos["fecha_salida"] !== null) {
+                $stmt->bindParam(":fecha_salida", $datos["fecha_salida"], PDO::PARAM_STR);
+            }
+
+            return $stmt->execute() ? "ok" : "error";
+        } catch (PDOException $e) {
+            error_log("Error en mdlActualizarEstado: " . $e->getMessage());
+            return "error";
+        }
+    }
+
     // Eliminar orden
     static public function mdlEliminarOrdenTrabajo($id) {
         try {
-            error_log("Eliminando orden con ID: " . $id);
-            
             $stmt = Conexion::conectar()->prepare("DELETE FROM ordentrabajo WHERE id_orden = :id");
             $stmt->bindParam(":id", $id, PDO::PARAM_INT);
             
             if ($stmt->execute()) {
                 $filasAfectadas = $stmt->rowCount();
-                error_log("Filas afectadas en eliminación de orden: " . $filasAfectadas);
                 
                 if ($filasAfectadas > 0) {
                     return "ok";
@@ -155,8 +165,6 @@ WHERE ot.id_orden = :id
                     return "error";
                 }
             } else {
-                error_log("Error en execute() de eliminación de orden");
-                error_log("Error info: " . print_r($stmt->errorInfo(), true));
                 return "error";
             }
         } catch (PDOException $e) {
@@ -165,27 +173,105 @@ WHERE ot.id_orden = :id
         }
     }
 
-    // Actualizar estado de orden
-    static public function mdlActualizarEstado($datos) {
+    // Obtener órdenes por cliente
+    static public function mdlObtenerOrdenesPorCliente($id_cliente) {
         try {
-            $sql = "UPDATE ordentrabajo SET estado = :estado";
-            if (isset($datos["fecha_salida"]) && $datos["fecha_salida"]) {
-                $sql .= ", fecha_salida = :fecha_salida";
-            }
-            $sql .= " WHERE id_orden = :id_orden";
+            $stmt = Conexion::conectar()->prepare("
+                SELECT o.*, v.matricula, v.marca, v.modelo, 
+                       p.nombre as nombre_personal
+                FROM ordentrabajo o
+                INNER JOIN vehiculo v ON o.id_vehiculo = v.id_vehiculo
+                INNER JOIN personal p ON o.id_personal = p.id_personal
+                WHERE v.id_cliente = :id_cliente
+                ORDER BY o.fecha_ingreso DESC
+            ");
+            $stmt->bindParam(":id_cliente", $id_cliente, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerOrdenesPorCliente: " . $e->getMessage());
+            return array();
+        }
+    }
 
-            $stmt = Conexion::conectar()->prepare($sql);
-            $stmt->bindParam(":id_orden", $datos["id_orden"], PDO::PARAM_INT);
-            $stmt->bindParam(":estado", $datos["estado"], PDO::PARAM_STR);
-            
-            if (isset($datos["fecha_salida"]) && $datos["fecha_salida"]) {
-                $stmt->bindParam(":fecha_salida", $datos["fecha_salida"], PDO::PARAM_STR);
-            }
+    // Obtener órdenes por estado
+    static public function mdlObtenerOrdenesPorEstado($estado) {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT o.*, v.matricula, v.marca, v.modelo, 
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
+                       p.nombre as nombre_personal
+                FROM ordentrabajo o
+                INNER JOIN vehiculo v ON o.id_vehiculo = v.id_vehiculo
+                INNER JOIN cliente c ON v.id_cliente = c.id_cliente
+                INNER JOIN personal p ON o.id_personal = p.id_personal
+                WHERE o.estado = :estado
+                ORDER BY o.fecha_ingreso DESC
+            ");
+            $stmt->bindParam(":estado", $estado, PDO::PARAM_STR);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerOrdenesPorEstado: " . $e->getMessage());
+            return array();
+        }
+    }
 
+    // Marcar orden como facturada
+    static public function mdlMarcarComoFacturada($id_orden) {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                UPDATE ordentrabajo 
+                SET facturado = 1 
+                WHERE id_orden = :id_orden
+            ");
+            $stmt->bindParam(":id_orden", $id_orden, PDO::PARAM_INT);
             return $stmt->execute() ? "ok" : "error";
         } catch (PDOException $e) {
-            error_log("Error en mdlActualizarEstado: " . $e->getMessage());
+            error_log("Error en mdlMarcarComoFacturada: " . $e->getMessage());
             return "error";
+        }
+    }
+
+    // Obtener estadísticas de órdenes
+    static public function mdlObtenerEstadisticas() {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT 
+                    COUNT(*) as total_ordenes,
+                    SUM(CASE WHEN estado = 'en_proceso' THEN 1 ELSE 0 END) as en_proceso,
+                    SUM(CASE WHEN estado = 'completado' THEN 1 ELSE 0 END) as completadas,
+                    SUM(CASE WHEN estado = 'cancelado' THEN 1 ELSE 0 END) as canceladas,
+                    SUM(CASE WHEN facturado = 1 THEN 1 ELSE 0 END) as facturadas
+                FROM ordentrabajo
+            ");
+            $stmt->execute();
+            return $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerEstadisticas: " . $e->getMessage());
+            return array();
+        }
+    }
+
+    // Obtener órdenes recientes para el dashboard
+    static public function mdlObtenerOrdenesRecientes($limite = 5) {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT o.id_orden, o.fecha_ingreso, o.estado, 
+                       v.matricula, v.marca, v.modelo,
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente
+                FROM ordentrabajo o
+                INNER JOIN vehiculo v ON o.id_vehiculo = v.id_vehiculo
+                INNER JOIN cliente c ON v.id_cliente = c.id_cliente
+                ORDER BY o.fecha_ingreso DESC
+                LIMIT :limite
+            ");
+            $stmt->bindParam(":limite", $limite, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerOrdenesRecientes: " . $e->getMessage());
+            return array();
         }
     }
 }

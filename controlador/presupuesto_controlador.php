@@ -1,6 +1,7 @@
 <?php
-require_once "../modelo/modelo_presupuesto.php";
-require_once "../modelo/modelo_detalle_presupuesto.php";
+
+require_once __DIR__ . "/../modelo/modelo_presupuesto.php";
+require_once __DIR__ . "/../modelo/modelo_detalle_presupuesto.php";
 
 class PresupuestoControlador
 {
@@ -15,7 +16,7 @@ class PresupuestoControlador
         }
     }
 
-    // Obtener un presupuesto específico con sus detalles
+    // Obtener un presupuesto específico
     static public function ctrObtenerPresupuesto($id)
     {
         try {
@@ -30,6 +31,17 @@ class PresupuestoControlador
         }
     }
 
+    // Obtener detalles de un presupuesto
+    static public function ctrObtenerDetallesPresupuesto($id)
+    {
+        try {
+            return ModeloDetallePresupuesto::mdlObtenerDetalles($id);
+        } catch (Exception $e) {
+            error_log("Error en ctrObtenerDetallesPresupuesto: " . $e->getMessage());
+            return array();
+        }
+    }
+
     // Registrar nuevo presupuesto con detalles
     static public function ctrRegistrarPresupuesto()
     {
@@ -40,42 +52,26 @@ class PresupuestoControlador
                     throw new Exception("No hay sesión de personal activa");
                 }
 
-                // Validar datos básicos
-                if (empty($_POST["id_vehiculo"])) {
-                    throw new Exception("Debe seleccionar un vehículo");
-                }
-
-                if (empty($_POST["fecha_validez"])) {
-                    throw new Exception("Debe establecer una fecha de validez");
-                }
-
-                if (empty($_POST["total"]) || $_POST["total"] <= 0) {
-                    throw new Exception("El total debe ser mayor a 0");
-                }
-
                 // Validar y decodificar detalles
                 $detalles = json_decode($_POST["detalles"], true);
                 if (json_last_error() !== JSON_ERROR_NONE) {
-                    throw new Exception("Error en los datos del presupuesto: " . json_last_error_msg());
+                    throw new Exception("Error en formato de detalles: " . json_last_error_msg());
                 }
 
                 if (empty($detalles)) {
-                    throw new Exception("Debe agregar al menos un producto o servicio");
+                    throw new Exception("Debe agregar al menos un detalle");
                 }
 
                 // Preparar datos del presupuesto
                 $datos = array(
-                    "id_vehiculo" => (int) $_POST["id_vehiculo"],
-                    "id_personal" => (int) $_SESSION["id_personal"],
+                    "id_vehiculo" => $_POST["id_vehiculo"],
+                    "id_personal" => $_SESSION["id_personal"],
                     "fecha_emision" => date('Y-m-d H:i:s'),
                     "fecha_validez" => $_POST["fecha_validez"],
                     "estado" => "pendiente",
-                    "total" => (float) $_POST["total"],
+                    "total" => $_POST["total"],
                     "observaciones" => $_POST["observaciones"] ?? ""
                 );
-
-                error_log("=== REGISTRANDO PRESUPUESTO ===");
-                error_log("Datos del presupuesto: " . print_r($datos, true));
 
                 // Insertar presupuesto
                 $id_presupuesto = ModeloPresupuesto::mdlRegistrarPresupuesto($datos);
@@ -83,8 +79,6 @@ class PresupuestoControlador
                 if ($id_presupuesto === "error" || !is_numeric($id_presupuesto)) {
                     throw new Exception("Error al registrar el presupuesto en la base de datos");
                 }
-
-                error_log("Presupuesto creado con ID: " . $id_presupuesto);
 
                 // Insertar detalles uno por uno
                 $errores_detalles = array();
@@ -116,13 +110,10 @@ class PresupuestoControlador
                         "id_producto" => isset($detalle["id_producto"]) && !empty($detalle["id_producto"]) ? (int) $detalle["id_producto"] : null
                     );
 
-                    error_log("Insertando detalle " . ($index + 1) . ": " . print_r($datosDetalle, true));
-
                     $resultado = ModeloDetallePresupuesto::mdlRegistrarDetalle($datosDetalle);
 
                     if ($resultado !== "ok") {
                         $errores_detalles[] = "Error al guardar item " . ($index + 1);
-                        error_log("Error al insertar detalle " . ($index + 1) . ": " . $resultado);
                     }
                 }
 
@@ -131,8 +122,6 @@ class PresupuestoControlador
                     ModeloPresupuesto::mdlEliminarPresupuesto($id_presupuesto);
                     throw new Exception("Errores en los detalles: " . implode(", ", $errores_detalles));
                 }
-
-                error_log("SUCCESS: Presupuesto y detalles registrados correctamente");
 
                 echo '<script>
                 Swal.fire({
@@ -150,7 +139,7 @@ class PresupuestoControlador
                 return "ok";
 
             } catch (Exception $e) {
-                error_log("ERROR en ctrRegistrarPresupuesto: " . $e->getMessage());
+                error_log("Error en ctrRegistrarPresupuesto: " . $e->getMessage());
 
                 echo '<script>
                 Swal.fire({
@@ -163,8 +152,6 @@ class PresupuestoControlador
             </script>';
             }
         } else {
-            error_log("ERROR: Faltan datos POST - id_vehiculo: " . (isset($_POST["id_vehiculo"]) ? "OK" : "NO") . ", detalles: " . (isset($_POST["detalles"]) ? "OK" : "NO"));
-
             echo '<script>
             Swal.fire({
                 icon: "error",
@@ -281,95 +268,64 @@ class PresupuestoControlador
         return null;
     }
 
-    // Eliminar presupuesto y sus detalles
+    // Eliminar presupuesto
     static public function ctrEliminarPresupuesto()
     {
         if (isset($_POST["eliminarPresupuesto"])) {
             try {
-                $id_presupuesto = $_POST["eliminarPresupuesto"];
+                $respuesta = ModeloPresupuesto::mdlEliminarPresupuesto($_POST["eliminarPresupuesto"]);
 
-                error_log("=== ELIMINANDO PRESUPUESTO ===");
-                error_log("ID a eliminar: " . $id_presupuesto);
-
-                // Verificar que el presupuesto existe
-                $presupuesto = ModeloPresupuesto::mdlObtenerPresupuesto($id_presupuesto);
-                if (!$presupuesto) {
-                    throw new Exception("El presupuesto no existe");
-                }
-
-                error_log("Presupuesto encontrado: " . print_r($presupuesto, true));
-
-                // Primero eliminar los detalles
-                $resultadoDetalles = ModeloDetallePresupuesto::mdlEliminarDetallesPresupuesto($id_presupuesto);
-                error_log("Resultado eliminación detalles: " . $resultadoDetalles);
-
-                if ($resultadoDetalles !== "ok") {
-                    throw new Exception("Error al eliminar los detalles del presupuesto");
-                }
-
-                // Luego eliminar el presupuesto
-                $resultadoPresupuesto = ModeloPresupuesto::mdlEliminarPresupuesto($id_presupuesto);
-                error_log("Resultado eliminación presupuesto: " . $resultadoPresupuesto);
-
-                if ($resultadoPresupuesto == "ok") {
-                    error_log("SUCCESS: Presupuesto eliminado correctamente");
-
+                if ($respuesta == "ok") {
                     echo '<script>
-                    Swal.fire({
-                        icon: "success",
-                        title: "¡Éxito!",
-                        text: "El presupuesto ha sido eliminado correctamente",
-                        showConfirmButton: true,
-                        confirmButtonText: "Cerrar"
-                    }).then((result) => {
-                        if (result.value) {
-                            window.location = "index.php?pagina=tabla/presupuestos";
-                        }
-                    });
-                </script>';
-                    return "ok";
+                        Swal.fire({
+                            icon: "success",
+                            title: "¡Éxito!",
+                            text: "El presupuesto ha sido eliminado correctamente",
+                            showConfirmButton: true,
+                            confirmButtonText: "Cerrar"
+                        }).then((result) => {
+                            if (result.value) {
+                                window.location = "index.php?pagina=tabla/presupuestos";
+                            }
+                        });
+                    </script>';
                 } else {
-                    throw new Exception("Error al eliminar el presupuesto de la base de datos");
+                    throw new Exception("No se pudo eliminar el presupuesto");
                 }
-
+                return "ok";
             } catch (Exception $e) {
-                error_log("ERROR en ctrEliminarPresupuesto: " . $e->getMessage());
+                error_log("Error en ctrEliminarPresupuesto: " . $e->getMessage());
 
                 echo '<script>
+                    Swal.fire({
+                        icon: "error",
+                        title: "Error",
+                        text: "' . addslashes($e->getMessage()) . '",
+                        showConfirmButton: true,
+                        confirmButtonText: "Cerrar"
+                    });
+                </script>';
+            }
+        } else {
+            echo '<script>
                 Swal.fire({
                     icon: "error",
                     title: "Error",
-                    text: "' . addslashes($e->getMessage()) . '",
+                    text: "No se especificó qué presupuesto eliminar",
                     showConfirmButton: true,
                     confirmButtonText: "Cerrar"
                 });
             </script>';
-            }
-        } else {
-            error_log("ERROR: No se recibió el ID del presupuesto a eliminar");
-
-            echo '<script>
-            Swal.fire({
-                icon: "error",
-                title: "Error",
-                text: "No se especificó qué presupuesto eliminar",
-                showConfirmButton: true,
-                confirmButtonText: "Cerrar"
-            });
-        </script>';
         }
         return null;
     }
 
-    // Actualizar estado del presupuesto
-    static public function ctrActualizarEstado()
+    // Cambiar estado del presupuesto
+    static public function ctrCambiarEstadoPresupuesto()
     {
-        if (isset($_POST["id_presupuesto"]) && isset($_POST["estado"])) {
+        if (isset($_POST["id_presupuesto"]) && isset($_POST["nuevo_estado"])) {
             try {
-                $respuesta = ModeloPresupuesto::mdlActualizarEstado(
-                    $_POST["id_presupuesto"],
-                    $_POST["estado"]
-                );
+                $respuesta = ModeloPresupuesto::mdlActualizarEstado($_POST["id_presupuesto"], $_POST["nuevo_estado"]);
 
                 if ($respuesta == "ok") {
                     echo '<script>
@@ -388,20 +344,53 @@ class PresupuestoControlador
                     return "ok";
                 }
             } catch (Exception $e) {
-                error_log("Error en ctrActualizarEstado: " . $e->getMessage());
+                error_log("Error en ctrCambiarEstadoPresupuesto: " . $e->getMessage());
             }
 
             echo '<script>
                 Swal.fire({
                     icon: "error",
                     title: "Error",
-                    text: "Ocurrió un error al actualizar el estado",
+                    text: "Ocurrió un error al cambiar el estado",
                     showConfirmButton: true,
                     confirmButtonText: "Cerrar"
                 });
             </script>';
         }
         return null;
+    }
+
+    // Obtener presupuestos por cliente
+    static public function ctrObtenerPresupuestosPorCliente($id_cliente)
+    {
+        try {
+            return ModeloPresupuesto::mdlObtenerPresupuestosPorCliente($id_cliente);
+        } catch (Exception $e) {
+            error_log("Error en ctrObtenerPresupuestosPorCliente: " . $e->getMessage());
+            return array();
+        }
+    }
+
+    // Obtener estadísticas de presupuestos
+    static public function ctrObtenerEstadisticasPresupuestos()
+    {
+        try {
+            return ModeloPresupuesto::mdlObtenerEstadisticas();
+        } catch (Exception $e) {
+            error_log("Error en ctrObtenerEstadisticasPresupuestos: " . $e->getMessage());
+            return array();
+        }
+    }
+
+    // Marcar presupuesto como facturado
+    static public function ctrMarcarComoFacturado($id_presupuesto)
+    {
+        try {
+            return ModeloPresupuesto::mdlMarcarComoFacturado($id_presupuesto);
+        } catch (Exception $e) {
+            error_log("Error en ctrMarcarComoFacturado: " . $e->getMessage());
+            return "error";
+        }
     }
 }
 ?>

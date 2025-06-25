@@ -1,10 +1,12 @@
 <?php
+
 require_once "conexion.php";
 
-class ModeloFactura {
-    
+class ModeloFactura
+{
     // Listar todas las facturas
-    static public function mdlListarFacturas() {
+    static public function mdlListarFacturas()
+    {
         try {
             $stmt = Conexion::conectar()->prepare("
                 SELECT f.*, 
@@ -15,7 +17,6 @@ class ModeloFactura {
                 INNER JOIN personal p ON f.id_personal = p.id_personal
                 ORDER BY f.fecha_emision DESC
             ");
-            
             $stmt->execute();
             return $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (PDOException $e) {
@@ -24,33 +25,24 @@ class ModeloFactura {
         }
     }
 
-    // Obtener una factura específica con sus detalles
-    static public function mdlObtenerFactura($id) {
+    // Obtener una factura específica
+    static public function mdlObtenerFactura($id)
+    {
         try {
             $stmt = Conexion::conectar()->prepare("
                 SELECT f.*, 
                        CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
-                       c.cedula,
-                       c.direccion,
-                       c.telefono,
-                       c.email,
+                       c.telefono as telefono_cliente,
+                       c.email as email_cliente,
                        p.nombre as nombre_personal
                 FROM factura f
                 INNER JOIN cliente c ON f.id_cliente = c.id_cliente
                 INNER JOIN personal p ON f.id_personal = p.id_personal
                 WHERE f.id_factura = :id
             ");
-            
             $stmt->bindParam(":id", $id, PDO::PARAM_INT);
             $stmt->execute();
-            $factura = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if ($factura) {
-                // Obtener detalles de la factura
-                $factura['detalles'] = ModeloDetalleFactura::mdlObtenerDetalles($id);
-            }
-            
-            return $factura;
+            return $stmt->fetch(PDO::FETCH_ASSOC);
         } catch (PDOException $e) {
             error_log("Error en mdlObtenerFactura: " . $e->getMessage());
             return false;
@@ -58,31 +50,29 @@ class ModeloFactura {
     }
 
     // Registrar nueva factura
-    static public function mdlRegistrarFactura($datos) {
+    static public function mdlRegistrarFactura($datos)
+    {
         try {
             $pdo = Conexion::conectar();
+            
+            // Iniciar transacción
             $pdo->beginTransaction();
 
-            // Generar número de factura
-            $stmt = $pdo->prepare("SELECT generar_numero_factura() as numero");
-            $stmt->execute();
-            $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
-            $numero_factura = $resultado['numero'];
-
             $stmt = $pdo->prepare("
-                INSERT INTO factura 
-                (numero_factura, id_cliente, id_personal, id_orden, id_presupuesto, 
-                 fecha_emision, tipo_factura, subtotal, descuento, iva, total, estado, metodo_pago, observaciones)
-                VALUES 
-                (:numero_factura, :id_cliente, :id_personal, :id_orden, :id_presupuesto,
-                 :fecha_emision, :tipo_factura, :subtotal, :descuento, :iva, :total, :estado, :metodo_pago, :observaciones)
+                INSERT INTO factura (id_cliente, id_personal, id_orden, id_presupuesto, numero_factura, fecha_emision, 
+                                   tipo_factura, subtotal, descuento, iva, total, estado, metodo_pago, observaciones)
+                VALUES (:id_cliente, :id_personal, :id_orden, :id_presupuesto, :numero_factura, :fecha_emision,
+                        :tipo_factura, :subtotal, :descuento, :iva, :total, :estado, :metodo_pago, :observaciones)
             ");
 
-            $stmt->bindParam(":numero_factura", $numero_factura, PDO::PARAM_STR);
+            // Generar número de factura
+            $numero_factura = self::mdlGenerarNumeroFactura();
+
             $stmt->bindParam(":id_cliente", $datos["id_cliente"], PDO::PARAM_INT);
             $stmt->bindParam(":id_personal", $datos["id_personal"], PDO::PARAM_INT);
             $stmt->bindParam(":id_orden", $datos["id_orden"], PDO::PARAM_INT);
             $stmt->bindParam(":id_presupuesto", $datos["id_presupuesto"], PDO::PARAM_INT);
+            $stmt->bindParam(":numero_factura", $numero_factura, PDO::PARAM_STR);
             $stmt->bindParam(":fecha_emision", $datos["fecha_emision"], PDO::PARAM_STR);
             $stmt->bindParam(":tipo_factura", $datos["tipo_factura"], PDO::PARAM_STR);
             $stmt->bindParam(":subtotal", $datos["subtotal"], PDO::PARAM_STR);
@@ -95,160 +85,268 @@ class ModeloFactura {
 
             if ($stmt->execute()) {
                 $id_factura = $pdo->lastInsertId();
-                
-                if ($id_factura > 0) {
-                    // Marcar orden como facturada si aplica
-                    if ($datos["id_orden"]) {
-                        $stmt = $pdo->prepare("UPDATE ordentrabajo SET facturado = 1 WHERE id_orden = :id");
-                        $stmt->bindParam(":id", $datos["id_orden"], PDO::PARAM_INT);
-                        $stmt->execute();
-                    }
-                    
-                    // Marcar presupuesto como facturado si aplica
-                    if ($datos["id_presupuesto"]) {
-                        $stmt = $pdo->prepare("UPDATE presupuesto SET facturado = 1 WHERE id_presupuesto = :id");
-                        $stmt->bindParam(":id", $datos["id_presupuesto"], PDO::PARAM_INT);
-                        $stmt->execute();
-                    }
-                    
+
+                // Verificar que el ID es válido
+                if ($id_factura && $id_factura > 0) {
+                    // Confirmar transacción
                     $pdo->commit();
                     return $id_factura;
+                } else {
+                    $pdo->rollBack();
+                    return "error";
                 }
+            } else {
+                $pdo->rollBack();
+                return "error";
             }
-            
-            $pdo->rollBack();
-            return "error";
         } catch (PDOException $e) {
+            error_log("Error en mdlRegistrarFactura: " . $e->getMessage());
+
+            // Rollback si hay transacción activa
             if (isset($pdo) && $pdo->inTransaction()) {
                 $pdo->rollBack();
             }
-            error_log("Error en mdlRegistrarFactura: " . $e->getMessage());
+
+            return "error";
+        }
+    }
+
+    // Actualizar factura
+    static public function mdlActualizarFactura($datos)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                UPDATE factura 
+                SET tipo_factura = :tipo_factura,
+                    subtotal = :subtotal,
+                    descuento = :descuento,
+                    iva = :iva,
+                    total = :total,
+                    estado = :estado,
+                    metodo_pago = :metodo_pago,
+                    observaciones = :observaciones
+                WHERE id_factura = :id_factura
+            ");
+
+            $stmt->bindParam(":id_factura", $datos["id_factura"], PDO::PARAM_INT);
+            $stmt->bindParam(":tipo_factura", $datos["tipo_factura"], PDO::PARAM_STR);
+            $stmt->bindParam(":subtotal", $datos["subtotal"], PDO::PARAM_STR);
+            $stmt->bindParam(":descuento", $datos["descuento"], PDO::PARAM_STR);
+            $stmt->bindParam(":iva", $datos["iva"], PDO::PARAM_STR);
+            $stmt->bindParam(":total", $datos["total"], PDO::PARAM_STR);
+            $stmt->bindParam(":estado", $datos["estado"], PDO::PARAM_STR);
+            $stmt->bindParam(":metodo_pago", $datos["metodo_pago"], PDO::PARAM_STR);
+            $stmt->bindParam(":observaciones", $datos["observaciones"], PDO::PARAM_STR);
+
+            return $stmt->execute() ? "ok" : "error";
+        } catch (PDOException $e) {
+            error_log("Error en mdlActualizarFactura: " . $e->getMessage());
+            return "error";
+        }
+    }
+
+    // Eliminar factura
+    static public function mdlEliminarFactura($id)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("DELETE FROM factura WHERE id_factura = :id");
+            $stmt->bindParam(":id", $id, PDO::PARAM_INT);
+
+            if ($stmt->execute()) {
+                $filasAfectadas = $stmt->rowCount();
+
+                if ($filasAfectadas > 0) {
+                    return "ok";
+                } else {
+                    error_log("No se encontró la factura con ID: " . $id);
+                    return "error";
+                }
+            } else {
+                return "error";
+            }
+        } catch (PDOException $e) {
+            error_log("Error en mdlEliminarFactura: " . $e->getMessage());
             return "error";
         }
     }
 
     // Actualizar estado de factura
-    static public function mdlActualizarEstadoFactura($id, $estado) {
+    static public function mdlActualizarEstado($id, $estado)
+    {
         try {
-            $pdo = Conexion::conectar();
-            $pdo->beginTransaction();
-            
-            // Obtener datos de la factura
-            $stmt = $pdo->prepare("SELECT * FROM factura WHERE id_factura = :id");
+            $stmt = Conexion::conectar()->prepare("UPDATE factura SET estado = :estado WHERE id_factura = :id");
             $stmt->bindParam(":id", $id, PDO::PARAM_INT);
-            $stmt->execute();
-            $factura = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$factura) {
-                $pdo->rollBack();
-                return "error";
-            }
-            
-            // Actualizar estado
-            $stmt = $pdo->prepare("UPDATE factura SET estado = :estado WHERE id_factura = :id");
             $stmt->bindParam(":estado", $estado, PDO::PARAM_STR);
-            $stmt->bindParam(":id", $id, PDO::PARAM_INT);
-            
-            if ($stmt->execute()) {
-                $pdo->commit();
-                return "ok";
-            }
-            
-            $pdo->rollBack();
-            return "error";
+            return $stmt->execute() ? "ok" : "error";
         } catch (PDOException $e) {
-            if (isset($pdo) && $pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            error_log("Error en mdlActualizarEstadoFactura: " . $e->getMessage());
+            error_log("Error en mdlActualizarEstado: " . $e->getMessage());
             return "error";
         }
     }
 
-    // Anular factura
-    static public function mdlAnularFactura($id, $motivo) {
+    // Obtener facturas por cliente
+    static public function mdlObtenerFacturasPorCliente($id_cliente)
+    {
         try {
-            $pdo = Conexion::conectar();
-            $pdo->beginTransaction();
+            $stmt = Conexion::conectar()->prepare("
+                SELECT f.*, p.nombre as nombre_personal
+                FROM factura f
+                INNER JOIN personal p ON f.id_personal = p.id_personal
+                WHERE f.id_cliente = :id_cliente
+                ORDER BY f.fecha_emision DESC
+            ");
+            $stmt->bindParam(":id_cliente", $id_cliente, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerFacturasPorCliente: " . $e->getMessage());
+            return array();
+        }
+    }
+
+    // Obtener facturas por estado
+    static public function mdlObtenerFacturasPorEstado($estado)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT f.*, 
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
+                       p.nombre as nombre_personal
+                FROM factura f
+                INNER JOIN cliente c ON f.id_cliente = c.id_cliente
+                INNER JOIN personal p ON f.id_personal = p.id_personal
+                WHERE f.estado = :estado
+                ORDER BY f.fecha_emision DESC
+            ");
+            $stmt->bindParam(":estado", $estado, PDO::PARAM_STR);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerFacturasPorEstado: " . $e->getMessage());
+            return array();
+        }
+    }
+
+    // Generar número de factura automático
+    static public function mdlGenerarNumeroFactura()
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT COUNT(*) + 1 as siguiente_numero 
+                FROM factura 
+                WHERE YEAR(fecha_emision) = YEAR(NOW())
+            ");
+            $stmt->execute();
+            $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
             
-            // Obtener factura
-            $stmt = $pdo->prepare("SELECT * FROM factura WHERE id_factura = :id");
-            $stmt->bindParam(":id", $id, PDO::PARAM_INT);
+            $year = date('Y');
+            $numero = str_pad($resultado['siguiente_numero'], 6, '0', STR_PAD_LEFT);
+            
+            return "FAC-{$year}-{$numero}";
+        } catch (PDOException $e) {
+            error_log("Error en mdlGenerarNumeroFactura: " . $e->getMessage());
+            return "FAC-" . date('Y') . "-000001";
+        }
+    }
+
+    // Obtener estadísticas de facturación
+    static public function mdlEstadisticasFacturacion($fecha_inicio = null, $fecha_fin = null)
+    {
+        try {
+            $sql = "
+                SELECT 
+                    COUNT(*) as total_facturas,
+                    SUM(CASE WHEN estado = 'pagada' THEN 1 ELSE 0 END) as facturas_pagadas,
+                    SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END) as facturas_pendientes,
+                    SUM(CASE WHEN estado = 'cancelada' THEN 1 ELSE 0 END) as facturas_canceladas,
+                    SUM(total) as total_facturado,
+                    SUM(CASE WHEN estado = 'pagada' THEN total ELSE 0 END) as total_cobrado,
+                    AVG(total) as promedio_factura
+                FROM factura
+            ";
+
+            if ($fecha_inicio && $fecha_fin) {
+                $sql .= " WHERE fecha_emision BETWEEN :fecha_inicio AND :fecha_fin";
+            }
+
+            $stmt = Conexion::conectar()->prepare($sql);
+            
+            if ($fecha_inicio && $fecha_fin) {
+                $stmt->bindParam(":fecha_inicio", $fecha_inicio, PDO::PARAM_STR);
+                $stmt->bindParam(":fecha_fin", $fecha_fin, PDO::PARAM_STR);
+            }
+            
+            $stmt->execute();
+            return $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlEstadisticasFacturacion: " . $e->getMessage());
+            return array();
+        }
+    }
+
+    // Obtener facturas recientes para el dashboard
+    static public function mdlObtenerFacturasRecientes($limite = 5)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT f.id_factura, f.numero_factura, f.fecha_emision, f.estado, f.total,
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente
+                FROM factura f
+                INNER JOIN cliente c ON f.id_cliente = c.id_cliente
+                ORDER BY f.fecha_emision DESC
+                LIMIT :limite
+            ");
+            $stmt->bindParam(":limite", $limite, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerFacturasRecientes: " . $e->getMessage());
+            return array();
+        }
+    }
+
+    // Verificar si una factura puede ser eliminada
+    static public function mdlPuedeEliminar($id_factura)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT estado 
+                FROM factura 
+                WHERE id_factura = :id
+            ");
+            $stmt->bindParam(":id", $id_factura, PDO::PARAM_INT);
             $stmt->execute();
             $factura = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$factura) {
-                $pdo->rollBack();
-                return "error";
+
+            if ($factura) {
+                // Solo se puede eliminar si está pendiente
+                return $factura['estado'] == 'pendiente';
             }
-            
-            // Obtener detalles para restaurar stock
-            $detalles = ModeloDetalleFactura::mdlObtenerDetalles($id);
-            
-            // Restaurar stock de productos
-            foreach ($detalles as $detalle) {
-                if ($detalle['tipo'] == 'producto' && $detalle['id_producto']) {
-                    // Restaurar stock
-                    $stmt = $pdo->prepare("UPDATE producto SET stock = stock + :cantidad WHERE id_producto = :id");
-                    $stmt->bindParam(":cantidad", $detalle["cantidad"], PDO::PARAM_INT);
-                    $stmt->bindParam(":id", $detalle["id_producto"], PDO::PARAM_INT);
-                    $stmt->execute();
-                    
-                    // Registrar en historial
-                    $stmt = $pdo->prepare("
-                        INSERT INTO historial_stock 
-                        (id_producto, id_factura, tipo_movimiento, cantidad_anterior, cantidad_movimiento, cantidad_actual, motivo, fecha, id_personal)
-                        VALUES 
-                        (:id_producto, :id_factura, 'entrada', 
-                         (SELECT stock - :cantidad FROM producto WHERE id_producto = :id_producto2), 
-                         :cantidad2, 
-                         (SELECT stock FROM producto WHERE id_producto = :id_producto3), 
-                         :motivo, NOW(), :id_personal)
-                    ");
-                    $stmt->bindParam(":id_producto", $detalle["id_producto"], PDO::PARAM_INT);
-                    $stmt->bindParam(":id_factura", $id, PDO::PARAM_INT);
-                    $stmt->bindParam(":cantidad", $detalle["cantidad"], PDO::PARAM_INT);
-                    $stmt->bindParam(":id_producto2", $detalle["id_producto"], PDO::PARAM_INT);
-                    $stmt->bindParam(":cantidad2", $detalle["cantidad"], PDO::PARAM_INT);
-                    $stmt->bindParam(":id_producto3", $detalle["id_producto"], PDO::PARAM_INT);
-                    $stmt->bindParam(":motivo", $motivo, PDO::PARAM_STR);
-                    $stmt->bindParam(":id_personal", $factura["id_personal"], PDO::PARAM_INT);
-                    $stmt->execute();
-                }
-            }
-            
-            // Anular factura
-            $stmt = $pdo->prepare("UPDATE factura SET estado = 'anulada', observaciones = CONCAT(IFNULL(observaciones, ''), ' - ANULADA: ', :motivo) WHERE id_factura = :id");
-            $stmt->bindParam(":motivo", $motivo, PDO::PARAM_STR);
-            $stmt->bindParam(":id", $id, PDO::PARAM_INT);
-            
-            if ($stmt->execute()) {
-                // Desmarcar orden como facturada
-                if ($factura["id_orden"]) {
-                    $stmt = $pdo->prepare("UPDATE ordentrabajo SET facturado = 0 WHERE id_orden = :id");
-                    $stmt->bindParam(":id", $factura["id_orden"], PDO::PARAM_INT);
-                    $stmt->execute();
-                }
-                
-                // Desmarcar presupuesto como facturado
-                if ($factura["id_presupuesto"]) {
-                    $stmt = $pdo->prepare("UPDATE presupuesto SET facturado = 0 WHERE id_presupuesto = :id");
-                    $stmt->bindParam(":id", $factura["id_presupuesto"], PDO::PARAM_INT);
-                    $stmt->execute();
-                }
-                
-                $pdo->commit();
-                return "ok";
-            }
-            
-            $pdo->rollBack();
-            return "error";
+            return false;
         } catch (PDOException $e) {
-            if (isset($pdo) && $pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            error_log("Error en mdlAnularFactura: " . $e->getMessage());
-            return "error";
+            error_log("Error en mdlPuedeEliminar: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    // Obtener total de ventas del mes actual
+    static public function mdlObtenerVentasMes()
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT SUM(total) as total_mes
+                FROM factura 
+                WHERE MONTH(fecha_emision) = MONTH(NOW()) 
+                AND YEAR(fecha_emision) = YEAR(NOW())
+                AND estado = 'pagada'
+            ");
+            $stmt->execute();
+            $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $resultado['total_mes'] ?? 0;
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerVentasMes: " . $e->getMessage());
+            return 0;
         }
     }
 }
+?>
