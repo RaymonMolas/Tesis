@@ -1,145 +1,310 @@
 <?php
+
 require_once "conexion.php";
 
-class ModeloAgendamiento {
-
-    static public function guardarCita($datos) {
-        $stmt = Conexion::conectar()->prepare("INSERT INTO AgendamientoCita (id_cliente, fecha, hora, motivo, estado)
-                                               VALUES (:id_cliente, :fecha, :hora, :motivo, :estado)");
-        $stmt->bindParam(":id_cliente", $datos["id_cliente"], PDO::PARAM_INT);
-        $stmt->bindParam(":fecha", $datos["fecha"], PDO::PARAM_STR);
-        $stmt->bindParam(":hora", $datos["hora"], PDO::PARAM_STR);
-        $stmt->bindParam(":motivo", $datos["motivo"], PDO::PARAM_STR);
-        $stmt->bindParam(":estado", $datos["estado"], PDO::PARAM_STR);
-        return $stmt->execute() ? "ok" : "error";
-    }
-
-    static public function obtenerCitas() {
-        $stmt = Conexion::conectar()->prepare("SELECT a.id_cita, a.fecha, a.hora, a.motivo, a.estado, 
-                                                      CONCAT(c.nombre, ' ', c.apellido) AS cliente
-                                               FROM AgendamientoCita a
-                                               JOIN cliente c ON a.id_cliente = c.id_cliente
-                                               WHERE a.estado = 'aprobado'");
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-
-    static public function listarPendientes() {
-        $stmt = Conexion::conectar()->prepare("SELECT a.id_cita, a.fecha, a.hora, a.motivo, a.estado, 
-                                                      CONCAT(c.nombre, ' ', c.apellido) AS cliente
-                                               FROM AgendamientoCita a
-                                               JOIN cliente c ON a.id_cliente = c.id_cliente
-                                               WHERE a.estado = 'pendiente'
-                                               ORDER BY a.fecha ASC, a.hora ASC");
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-
-    static public function actualizarEstado($id, $estado) {
-        $conexion = Conexion::conectar();
-
-        // Obtener la fecha de la cita que se desea aprobar
-        $stmt = $conexion->prepare("SELECT fecha, id_cliente FROM AgendamientoCita WHERE id_cita = :id");
-        $stmt->bindParam(":id", $id, PDO::PARAM_INT);
-        $stmt->execute();
-        $cita = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$cita) return "cita_no_encontrada";
-
-        if ($estado === "aprobado") {
-            // Contar cuántas citas ya están aprobadas en esa fecha
-            $stmt = $conexion->prepare("SELECT COUNT(*) FROM AgendamientoCita WHERE fecha = :fecha AND estado = 'aprobado'");
-            $stmt->bindParam(":fecha", $cita["fecha"], PDO::PARAM_STR);
+class ModeloAgendamiento
+{
+    // Listar todas las citas agendadas
+    static public function mdlListarAgendamientos()
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT a.*, 
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
+                       c.telefono as telefono_cliente,
+                       c.email as email_cliente
+                FROM agendamiento a
+                INNER JOIN cliente c ON a.id_cliente = c.id_cliente
+                ORDER BY a.fecha_cita DESC, a.hora_cita DESC
+            ");
             $stmt->execute();
-            $cantidad = $stmt->fetchColumn();
-
-            if ($cantidad >= 6) {
-                return "limite_excedido";
-            }
-        }
-
-        // Actualizar estado
-        $stmt = $conexion->prepare("UPDATE AgendamientoCita SET estado = :estado WHERE id_cita = :id");
-        $stmt->bindParam(":estado", $estado, PDO::PARAM_STR);
-        $stmt->bindParam(":id", $id, PDO::PARAM_INT);
-
-        if ($stmt->execute()) {
-            if ($estado === "aprobado") {
-                $fecha = isset($cita["fecha"]) ? date("d/m/Y", strtotime($cita["fecha"])) : "Fecha desconocida";
-                $hora = isset($cita["hora"]) && $cita["hora"] !== null ? date("H:i", strtotime($cita["hora"])) : "Hora desconocida";
-        
-                $mensaje = "Tu cita para el $fecha a las $hora ha sido aprobada. ✅";
-                self::insertarNotificacion($cita["id_cliente"], $mensaje);
-            }
-            return "ok";
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlListarAgendamientos: " . $e->getMessage());
+            return array();
         }
     }
 
-    static public function obtenerCitaPorId($id) {
-        $stmt = Conexion::conectar()->prepare("SELECT a.*, CONCAT(c.nombre, ' ', c.apellido) AS cliente 
-                                               FROM AgendamientoCita a
-                                               JOIN cliente c ON a.id_cliente = c.id_cliente
-                                               WHERE a.id_cita = :id");
-        $stmt->bindParam(":id", $id, PDO::PARAM_INT);
-        $stmt->execute();
-        return $stmt->fetch(PDO::FETCH_ASSOC);
+    // Obtener una cita específica
+    static public function mdlObtenerAgendamiento($id)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT a.*, 
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
+                       c.telefono as telefono_cliente,
+                       c.email as email_cliente
+                FROM agendamiento a
+                INNER JOIN cliente c ON a.id_cliente = c.id_cliente
+                WHERE a.id_agendamiento = :id
+            ");
+            $stmt->bindParam(":id", $id, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerAgendamiento: " . $e->getMessage());
+            return false;
+        }
     }
 
-    public static function clienteTieneCitaActiva($id_cliente) {
-        $stmt = Conexion::conectar()->prepare("SELECT COUNT(*) FROM AgendamientoCita 
-                                               WHERE id_cliente = :id_cliente 
-                                               AND estado IN ('pendiente', 'aprobado')");
-        $stmt->bindParam(":id_cliente", $id_cliente, PDO::PARAM_INT);
-        $stmt->execute();
-        return $stmt->fetchColumn() > 0;
+    // Registrar nueva cita
+    static public function mdlRegistrarAgendamiento($datos)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                INSERT INTO agendamiento (id_cliente, fecha_cita, hora_cita, motivo_cita, observaciones, estado, fecha_solicitud)
+                VALUES (:id_cliente, :fecha_cita, :hora_cita, :motivo_cita, :observaciones, :estado, :fecha_solicitud)
+            ");
+
+            $stmt->bindParam(":id_cliente", $datos["id_cliente"], PDO::PARAM_INT);
+            $stmt->bindParam(":fecha_cita", $datos["fecha_cita"], PDO::PARAM_STR);
+            $stmt->bindParam(":hora_cita", $datos["hora_cita"], PDO::PARAM_STR);
+            $stmt->bindParam(":motivo_cita", $datos["motivo_cita"], PDO::PARAM_STR);
+            $stmt->bindParam(":observaciones", $datos["observaciones"], PDO::PARAM_STR);
+            $stmt->bindParam(":estado", $datos["estado"], PDO::PARAM_STR);
+            $stmt->bindParam(":fecha_solicitud", $datos["fecha_solicitud"], PDO::PARAM_STR);
+
+            return $stmt->execute() ? "ok" : "error";
+        } catch (PDOException $e) {
+            error_log("Error en mdlRegistrarAgendamiento: " . $e->getMessage());
+            return "error";
+        }
     }
 
-    static public function obtenerCitasCliente($id_cliente) {
-        $stmt = Conexion::conectar()->prepare("SELECT id_cita, fecha, hora, motivo, estado 
-                                               FROM AgendamientoCita 
-                                               WHERE id_cliente = :id_cliente");
-        $stmt->bindParam(":id_cliente", $id_cliente, PDO::PARAM_INT);
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Actualizar cita
+    static public function mdlActualizarAgendamiento($datos)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                UPDATE agendamiento 
+                SET fecha_cita = :fecha_cita,
+                    hora_cita = :hora_cita,
+                    motivo_cita = :motivo_cita,
+                    observaciones = :observaciones,
+                    estado = :estado
+                WHERE id_agendamiento = :id_agendamiento
+            ");
+
+            $stmt->bindParam(":id_agendamiento", $datos["id_agendamiento"], PDO::PARAM_INT);
+            $stmt->bindParam(":fecha_cita", $datos["fecha_cita"], PDO::PARAM_STR);
+            $stmt->bindParam(":hora_cita", $datos["hora_cita"], PDO::PARAM_STR);
+            $stmt->bindParam(":motivo_cita", $datos["motivo_cita"], PDO::PARAM_STR);
+            $stmt->bindParam(":observaciones", $datos["observaciones"], PDO::PARAM_STR);
+            $stmt->bindParam(":estado", $datos["estado"], PDO::PARAM_STR);
+
+            return $stmt->execute() ? "ok" : "error";
+        } catch (PDOException $e) {
+            error_log("Error en mdlActualizarAgendamiento: " . $e->getMessage());
+            return "error";
+        }
     }
 
-    public static function obtenerClientesSinCitaActiva() {
-        $sql = "SELECT id_cliente FROM cliente WHERE id_cliente NOT IN (
-                    SELECT id_cliente FROM agendamientocita
-                    WHERE estado IN ('pendiente', 'aprobado')
-                )";
-        $stmt = Conexion::conectar()->prepare($sql);
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Eliminar cita
+    static public function mdlEliminarAgendamiento($id)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("DELETE FROM agendamiento WHERE id_agendamiento = :id");
+            $stmt->bindParam(":id", $id, PDO::PARAM_INT);
+            return $stmt->execute() ? "ok" : "error";
+        } catch (PDOException $e) {
+            error_log("Error en mdlEliminarAgendamiento: " . $e->getMessage());
+            return "error";
+        }
     }
 
-    public static function insertarNotificacion($id_cliente, $mensaje) {
-        $sql = "INSERT INTO notificaciones_cliente (id_cliente, mensaje) VALUES (:id_cliente, :mensaje)";
-        $stmt = Conexion::conectar()->prepare($sql);
-        $stmt->bindParam(":id_cliente", $id_cliente, PDO::PARAM_INT);
-        $stmt->bindParam(":mensaje", $mensaje, PDO::PARAM_STR);
-        return $stmt->execute();
+    // Cambiar estado de cita
+    static public function mdlCambiarEstadoCita($id, $estado)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                UPDATE agendamiento 
+                SET estado = :estado 
+                WHERE id_agendamiento = :id
+            ");
+            $stmt->bindParam(":id", $id, PDO::PARAM_INT);
+            $stmt->bindParam(":estado", $estado, PDO::PARAM_STR);
+            return $stmt->execute() ? "ok" : "error";
+        } catch (PDOException $e) {
+            error_log("Error en mdlCambiarEstadoCita: " . $e->getMessage());
+            return "error";
+        }
     }
 
-    public static function obtenerNotificacionesCliente($id_cliente) {
-        $sql = "SELECT * FROM notificaciones_cliente WHERE id_cliente = :id_cliente ORDER BY fecha_creacion DESC";
-        $stmt = Conexion::conectar()->prepare($sql);
-        $stmt->bindParam(":id_cliente", $id_cliente, PDO::PARAM_INT);
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Obtener citas de un cliente
+    static public function mdlObtenerCitasCliente($id_cliente)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT * FROM agendamiento 
+                WHERE id_cliente = :id_cliente 
+                ORDER BY fecha_cita DESC, hora_cita DESC
+            ");
+            $stmt->bindParam(":id_cliente", $id_cliente, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerCitasCliente: " . $e->getMessage());
+            return array();
+        }
     }
 
-    public static function marcarNotificacionesLeidas($id_cliente) {
-        $sql = "UPDATE notificaciones_cliente SET leida = 1 WHERE id_cliente = :id_cliente";
-        $stmt = Conexion::conectar()->prepare($sql);
-        $stmt->bindParam(":id_cliente", $id_cliente, PDO::PARAM_INT);
-        return $stmt->execute();
+    // Obtener citas por fecha
+    static public function mdlObtenerCitasPorFecha($fecha)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT a.*, 
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
+                       c.telefono as telefono_cliente
+                FROM agendamiento a
+                INNER JOIN cliente c ON a.id_cliente = c.id_cliente
+                WHERE a.fecha_cita = :fecha
+                ORDER BY a.hora_cita
+            ");
+            $stmt->bindParam(":fecha", $fecha, PDO::PARAM_STR);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerCitasPorFecha: " . $e->getMessage());
+            return array();
+        }
     }
-    static public function contarCitasActivasPorFecha($fecha) {
-        $stmt = Conexion::conectar()->prepare("SELECT COUNT(*) FROM AgendamientoCita WHERE fecha = :fecha AND estado = 'aprobado'");
-        $stmt->bindParam(":fecha", $fecha, PDO::PARAM_STR);
-        $stmt->execute();
-        return $stmt->fetchColumn();
+
+    // Obtener citas pendientes
+    static public function mdlObtenerCitasPendientes()
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT a.*, 
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
+                       c.telefono as telefono_cliente
+                FROM agendamiento a
+                INNER JOIN cliente c ON a.id_cliente = c.id_cliente
+                WHERE a.estado = 'pendiente'
+                ORDER BY a.fecha_cita, a.hora_cita
+            ");
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerCitasPendientes: " . $e->getMessage());
+            return array();
+        }
+    }
+
+    // Verificar disponibilidad de horario
+    static public function mdlVerificarDisponibilidad($fecha, $hora, $id_agendamiento = null)
+    {
+        try {
+            $sql = "SELECT COUNT(*) as total FROM agendamiento 
+                    WHERE fecha_cita = :fecha AND hora_cita = :hora 
+                    AND estado IN ('pendiente', 'confirmada')";
+            
+            if ($id_agendamiento) {
+                $sql .= " AND id_agendamiento != :id_agendamiento";
+            }
+
+            $stmt = Conexion::conectar()->prepare($sql);
+            $stmt->bindParam(":fecha", $fecha, PDO::PARAM_STR);
+            $stmt->bindParam(":hora", $hora, PDO::PARAM_STR);
+            
+            if ($id_agendamiento) {
+                $stmt->bindParam(":id_agendamiento", $id_agendamiento, PDO::PARAM_INT);
+            }
+            
+            $stmt->execute();
+            $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            return $resultado['total'] == 0;
+        } catch (PDOException $e) {
+            error_log("Error en mdlVerificarDisponibilidad: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    // Obtener estadísticas de agendamientos
+    static public function mdlObtenerEstadisticas()
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT 
+                    COUNT(*) as total_citas,
+                    COUNT(CASE WHEN estado = 'pendiente' THEN 1 END) as citas_pendientes,
+                    COUNT(CASE WHEN estado = 'confirmada' THEN 1 END) as citas_confirmadas,
+                    COUNT(CASE WHEN estado = 'completada' THEN 1 END) as citas_completadas,
+                    COUNT(CASE WHEN estado = 'cancelada' THEN 1 END) as citas_canceladas,
+                    COUNT(CASE WHEN fecha_cita = CURDATE() THEN 1 END) as citas_hoy,
+                    COUNT(CASE WHEN fecha_cita >= CURDATE() AND fecha_cita <= DATE_ADD(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as citas_semana
+                FROM agendamiento
+            ");
+            $stmt->execute();
+            return $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerEstadisticas: " . $e->getMessage());
+            return array();
+        }
+    }
+
+    // Buscar citas
+    static public function mdlBuscarCitas($termino)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT a.*, 
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
+                       c.telefono as telefono_cliente
+                FROM agendamiento a
+                INNER JOIN cliente c ON a.id_cliente = c.id_cliente
+                WHERE CONCAT(c.nombre, ' ', c.apellido) LIKE :termino
+                   OR a.motivo_cita LIKE :termino
+                   OR c.telefono LIKE :termino
+                ORDER BY a.fecha_cita DESC, a.hora_cita DESC
+            ");
+            $termino = "%" . $termino . "%";
+            $stmt->bindParam(":termino", $termino, PDO::PARAM_STR);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlBuscarCitas: " . $e->getMessage());
+            return array();
+        }
+    }
+
+    // Contar total de citas
+    static public function mdlContarCitas()
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("SELECT COUNT(*) as total FROM agendamiento");
+            $stmt->execute();
+            $resultado = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $resultado['total'];
+        } catch (PDOException $e) {
+            error_log("Error en mdlContarCitas: " . $e->getMessage());
+            return 0;
+        }
+    }
+
+    // Obtener próximas citas
+    static public function mdlObtenerProximasCitas($limite = 5)
+    {
+        try {
+            $stmt = Conexion::conectar()->prepare("
+                SELECT a.*, 
+                       CONCAT(c.nombre, ' ', c.apellido) as nombre_cliente,
+                       c.telefono as telefono_cliente
+                FROM agendamiento a
+                INNER JOIN cliente c ON a.id_cliente = c.id_cliente
+                WHERE a.fecha_cita >= CURDATE() 
+                AND a.estado IN ('pendiente', 'confirmada')
+                ORDER BY a.fecha_cita, a.hora_cita
+                LIMIT :limite
+            ");
+            $stmt->bindParam(":limite", $limite, PDO::PARAM_INT);
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            error_log("Error en mdlObtenerProximasCitas: " . $e->getMessage());
+            return array();
+        }
     }
 }
 ?>
