@@ -1,347 +1,773 @@
 <?php
-if (!isset($_SESSION["validarIngreso"]) || $_SESSION["validarIngreso"] != "ok") {
+if (!isset($_SESSION["validarIngreso"])) {
     echo '<script>window.location = "index.php?pagina=login";</script>';
+    return;
+} elseif ($_SESSION["validarIngreso"] != "ok") {
+    echo '<script>window.location = "index.php?pagina=login";</script>';
+    return;
 }
-$tipoUsuario = $_SESSION["tipo_usuario"] ?? "";
-$esCliente = $tipoUsuario === "cliente";
-$esAdmin = $tipoUsuario === "personal" || $tipoUsuario === "administrador";
-$id_cliente = $_SESSION["id_cliente"] ?? null;
-$citas = $esAdmin ? ControladorAgendamiento::obtenerCitas() : [];
-$tieneCitaActiva = false;
-if ($esCliente && $id_cliente !== null) {
-    $tieneCitaActiva = ModeloAgendamiento::clienteTieneCitaActiva($id_cliente);
+
+// Obtener datos según el tipo de usuario
+if ($_SESSION["tipo_usuario"] == "personal") {
+    // Personal puede ver todas las citas
+    $citas = ControladorAgendamiento::listarSolicitudesPendientes();
+    $todasLasCitas = ControladorAgendamiento::listarTodasLasCitas();
+} else {
+    // Cliente solo ve sus citas
+    $id_cliente = $_SESSION["id_cliente"];
+    $misCitas = ControladorAgendamiento::obtenerCitasCliente($id_cliente);
+    $misVehiculos = VehiculoControlador::ctrListarVehiculosCliente($id_cliente);
 }
-$tieneCitaActivaJS = $tieneCitaActiva ? 'true' : 'false';
-$esClienteJS = $esCliente ? 'true' : 'false';
-$citasJSON = json_encode($citas);
 
-if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST["fecha"], $_POST["hora"], $_POST["motivo"])) {
-    $_POST["id_cliente"] = $_SESSION["id_cliente"] ?? null;
-
-    if ($_POST["id_cliente"] && !ModeloAgendamiento::clienteTieneCitaActiva($_POST["id_cliente"])) {
-        $resultado = ControladorAgendamiento::guardarCita();
-        $_SESSION["mensajeJS"] = $resultado === "ok"
-            ? "Swal.fire('Cita solicitada', 'Tu cita fue registrada correctamente.', 'success');"
-            : "Swal.fire('Error', 'Ocurrió un error al registrar la cita.', 'error');";
+// Procesar nueva cita si se envió el formulario
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['agendar_cita'])) {
+    $resultado = ControladorAgendamiento::ctrRegistrarCita();
+    
+    if ($resultado == "ok") {
+        echo '<script>
+            Swal.fire({
+                title: "¡Éxito!",
+                text: "Cita agendada correctamente",
+                icon: "success",
+                confirmButtonText: "Aceptar"
+            }).then(() => {
+                window.location.reload();
+            });
+        </script>';
     } else {
-        $_SESSION["mensajeJS"] = "Swal.fire('No permitido', 'Ya tienes una cita activa.', 'warning');";
+        echo '<script>
+            Swal.fire({
+                title: "Error",
+                text: "Error al agendar la cita: ' . $resultado . '",
+                icon: "error",
+                confirmButtonText: "Aceptar"
+            });
+        </script>';
     }
-    echo '<script>window.location="index.php?pagina=agendamiento";</script>';
-    exit;
+}
+
+// Procesar acciones del personal (confirmar, completar, cancelar)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion_cita'])) {
+    $resultado = ControladorAgendamiento::ctrActualizarEstadoCita();
+    
+    if ($resultado == "ok") {
+        echo '<script>
+            Swal.fire({
+                title: "¡Éxito!",
+                text: "Cita actualizada correctamente",
+                icon: "success",
+                confirmButtonText: "Aceptar"
+            }).then(() => {
+                window.location.reload();
+            });
+        </script>';
+    }
 }
 ?>
 
-<title>Agendamiento</title>
+<title>AGENDAMIENTO - Sistema de Citas</title>
+
 <style>
+    body {
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        min-height: 100vh;
+    }
+
+    .page-header {
+        background: linear-gradient(135deg, #6f42c1 0%, #e83e8c 100%);
+        color: white;
+        padding: 2rem 0;
+        margin-bottom: 2rem;
+        border-radius: 15px;
+        text-align: center;
+    }
+
+    .page-title {
+        font-size: 2.5rem;
+        font-weight: bold;
+        margin-bottom: 0.5rem;
+    }
+
+    .page-subtitle {
+        opacity: 0.9;
+        font-size: 1.1rem;
+    }
+
+    .main-container {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2rem;
+        margin-bottom: 2rem;
+    }
+
+    .form-container, .citas-container {
+        background: white;
+        border-radius: 15px;
+        box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+    }
+
+    .container-header {
+        background: linear-gradient(135deg, #6f42c1 0%, #e83e8c 100%);
+        color: white;
+        padding: 1.5rem;
+        text-align: center;
+    }
+
+    .container-content {
+        padding: 2rem;
+    }
+
+    .form-group {
+        margin-bottom: 1.5rem;
+    }
+
+    .form-label {
+        font-weight: 600;
+        color: #2c3e50;
+        margin-bottom: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .form-control {
+        border: 2px solid #e9ecef;
+        border-radius: 10px;
+        padding: 0.75rem 1rem;
+        font-size: 1rem;
+        transition: all 0.3s ease;
+        width: 100%;
+    }
+
+    .form-control:focus {
+        border-color: #6f42c1;
+        box-shadow: 0 0 0 3px rgba(111, 66, 193, 0.1);
+        outline: none;
+    }
+
+    .form-control.is-valid {
+        border-color: #28a745;
+    }
+
+    .form-control.is-invalid {
+        border-color: #dc3545;
+    }
+
+    .btn-primary {
+        background: linear-gradient(135deg, #6f42c1 0%, #e83e8c 100%);
+        border: none;
+        border-radius: 10px;
+        padding: 0.75rem 2rem;
+        font-weight: 600;
+        color: white;
+        transition: all 0.3s ease;
+        box-shadow: 0 5px 15px rgba(111, 66, 193, 0.3);
+        width: 100%;
+    }
+
+    .btn-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(111, 66, 193, 0.4);
+        color: white;
+    }
+
+    .cita-card {
+        background: #f8f9fa;
+        border-radius: 10px;
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+        border-left: 4px solid #6f42c1;
+        transition: all 0.3s ease;
+    }
+
+    .cita-card:hover {
+        transform: translateX(5px);
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+    }
+
+    .cita-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+
+    .cita-cliente {
+        font-weight: bold;
+        color: #2c3e50;
+        font-size: 1.1rem;
+    }
+
+    .cita-fecha {
+        background: linear-gradient(135deg, #6f42c1 0%, #e83e8c 100%);
+        color: white;
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+
+    .cita-motivo {
+        color: #6c757d;
+        margin-bottom: 1rem;
+        font-style: italic;
+    }
+
+    .cita-actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+    }
+
+    .btn-action {
+        padding: 0.4rem 0.8rem;
+        border: none;
+        border-radius: 5px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+
+    .btn-confirmar {
+        background: #28a745;
+        color: white;
+    }
+
+    .btn-completar {
+        background: #17a2b8;
+        color: white;
+    }
+
+    .btn-cancelar {
+        background: #dc3545;
+        color: white;
+    }
+
+    .btn-action:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.2);
+    }
+
+    .status-badge {
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+
+    .status-pendiente {
+        background: #fff3cd;
+        color: #856404;
+    }
+
+    .status-confirmada {
+        background: #d1ecf1;
+        color: #0c5460;
+    }
+
+    .status-completada {
+        background: #d4edda;
+        color: #155724;
+    }
+
+    .status-cancelada {
+        background: #f8d7da;
+        color: #721c24;
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 3rem;
+        color: #7f8c8d;
+    }
+
+    .empty-state i {
+        font-size: 4rem;
+        margin-bottom: 1rem;
+        opacity: 0.5;
+    }
+
     .calendar-container {
-        max-width: 1200px;
-        margin: 30px auto;
-        font-family: "Segoe UI", Tahoma, sans-serif;
-        background-color: #f9fafb;
-        border-radius: 16px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        background: white;
+        border-radius: 15px;
+        box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
+        margin-top: 2rem;
         overflow: hidden;
     }
 
     .calendar-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        background-color: #ffffff;
-        padding: 20px 30px;
-        border-bottom: 1px solid #e0e0e0;
-    }
-
-    .calendar-header h2 {
-        margin: 0;
-        font-size: 24px;
-        font-weight: 600;
-        color: #333;
-    }
-
-    .calendar-header button {
-        background-color: #f2f2f2;
-        border: none;
-        border-radius: 8px;
-        padding: 8px 14px;
-        font-size: 16px;
-        cursor: pointer;
-        transition: background-color 0.2s;
-    }
-
-    .calendar-header button:hover {
-        background-color: #e0e0e0;
-    }
-
-    .calendar-days {
-        display: grid;
-        grid-template-columns: repeat(7, 1fr);
-        background-color: #f4f6f8;
-        color: #5f6368;
-        font-weight: 600;
+        background: linear-gradient(135deg, #6f42c1 0%, #e83e8c 100%);
+        color: white;
+        padding: 1rem;
         text-align: center;
-        padding: 10px 0;
-        border-bottom: 1px solid #ddd;
+        font-weight: bold;
     }
 
     .calendar-grid {
         display: grid;
         grid-template-columns: repeat(7, 1fr);
-        background-color: #fff;
+        gap: 1px;
+        background: #e9ecef;
     }
 
-    .calendar-grid div {
-        padding: 6px;
-        border: 1px solid #f0f0f0;
-        min-height: 100px;
-        box-sizing: border-box;
-        overflow-y: auto;
+    .calendar-day {
+        background: white;
+        padding: 1rem;
+        text-align: center;
+        min-height: 80px;
         position: relative;
         cursor: pointer;
+        transition: all 0.3s ease;
     }
 
-    .calendar-grid div:hover {
-        background-color: #f0f0f0;
+    .calendar-day:hover {
+        background: #f8f9fa;
     }
 
-    .calendar-grid div strong {
+    .calendar-day.has-cita {
+        background: linear-gradient(135deg, rgba(111, 66, 193, 0.1) 0%, rgba(232, 62, 140, 0.1) 100%);
+    }
+
+    .calendar-day.has-cita::after {
+        content: '';
+        position: absolute;  
+        bottom: 5px;
+        right: 5px;
+        width: 8px;
+        height: 8px;
+        background: #6f42c1;
+        border-radius: 50%;
+    }
+
+    .required {
+        color: #dc3545;
+        font-weight: bold;
+    }
+
+    .form-hint {
+        font-size: 0.875rem;
+        color: #6c757d;
+        margin-top: 0.25rem;
+    }
+
+    .invalid-feedback {
         display: block;
-        margin-bottom: 4px;
-        font-weight: 600;
-        font-size: 13px;
-        color: #333;
+        color: #dc3545;
+        font-size: 0.875rem;
+        margin-top: 0.25rem;
     }
 
-    .calendar-grid .contador-citas {
-        font-size: 13px;
-        color: white;
-        background-color: #dc3545;
-        min-height: 10px;
-        padding: 2px 6px;
-        border-radius: 5px;
-        display: inline-block;
-        margin-top: 4px;
+    @media (max-width: 1024px) {
+        .main-container {
+            grid-template-columns: 1fr;
+        }
     }
 
-    .current-day {
-        border: 2px solid #1a73e8;
-        background-color: lightblue;
+    @media (max-width: 768px) {
+        .calendar-grid {
+            grid-template-columns: repeat(7, 1fr);
+            font-size: 0.85rem;
+        }
+        
+        .calendar-day {
+            min-height: 60px;
+            padding: 0.5rem;
+        }
+        
+        .cita-header {
+            flex-direction: column;
+            gap: 0.5rem;
+            align-items: flex-start;
+        }
     }
 </style>
 
-<div class="calendar-container">
-    <div class="calendar-header">
-        <button onclick="prevMonth()">&larr;</button>
-        <h2 id="calendar-title"></h2>
-        <button onclick="nextMonth()">&rarr;</button>
+<div class="container-fluid">
+    <!-- Encabezado de la página -->
+    <div class="page-header">
+        <h1 class="page-title">
+            <i class="bi bi-calendar-event"></i> 
+            <?php echo $_SESSION["tipo_usuario"] == "personal" ? "Gestión de Citas" : "Mis Citas"; ?>
+        </h1>
+        <p class="page-subtitle">
+            <?php echo $_SESSION["tipo_usuario"] == "personal" ? "Administra las citas de los clientes" : "Agenda y consulta tus citas"; ?>
+        </p>
     </div>
-    <div class="calendar-days">
-        <div>Dom</div>
-        <div>Lun</div>
-        <div>Mar</div>
-        <div>Mié</div>
-        <div>Jue</div>
-        <div>Vie</div>
-        <div>Sáb</div>
-    </div>
-    <div id="gridcalendar" class="calendar-grid"></div>
-</div>
 
-<!-- Modal Detalles del Día -->
-<div class="modal fade" id="modalCitasDelDia" tabindex="-1" aria-labelledby="modalCitasDelDiaLabel" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="modalCitasDelDiaLabel">Citas del Día</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+    <?php if ($_SESSION["tipo_usuario"] == "cliente"): ?>
+        <!-- PANEL DE CLIENTE -->
+        <div class="main-container">
+            <!-- Formulario para agendar nueva cita -->
+            <div class="form-container">
+                <div class="container-header">
+                    <h3><i class="bi bi-calendar-plus"></i> Agendar Nueva Cita</h3>
+                </div>
+                <div class="container-content">
+                    <form method="POST" id="formAgendarCita">
+                        <input type="hidden" name="agendar_cita" value="1">
+                        <input type="hidden" name="id_cliente" value="<?php echo $_SESSION['id_cliente']; ?>">
+
+                        <div class="form-group">
+                            <label class="form-label">
+                                <i class="bi bi-calendar3"></i> Fecha de la Cita <span class="required">*</span>
+                            </label>
+                            <input type="date" class="form-control" name="fecha_cita" id="fecha_cita" 
+                                   min="<?php echo date('Y-m-d'); ?>" required>
+                            <div class="form-hint">Seleccione una fecha futura</div>
+                            <div class="invalid-feedback" id="error-fecha_cita"></div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">
+                                <i class="bi bi-clock"></i> Hora de la Cita <span class="required">*</span>
+                            </label>
+                            <select class="form-control" name="hora_cita" id="hora_cita" required>
+                                <option value="">Seleccione una hora</option>
+                                <option value="08:00">08:00 AM</option>
+                                <option value="08:30">08:30 AM</option>
+                                <option value="09:00">09:00 AM</option>
+                                <option value="09:30">09:30 AM</option>
+                                <option value="10:00">10:00 AM</option>
+                                <option value="10:30">10:30 AM</option>
+                                <option value="11:00">11:00 AM</option>
+                                <option value="11:30">11:30 AM</option>
+                                <option value="14:00">02:00 PM</option>
+                                <option value="14:30">02:30 PM</option>
+                                <option value="15:00">03:00 PM</option>
+                                <option value="15:30">03:30 PM</option>
+                                <option value="16:00">04:00 PM</option>
+                                <option value="16:30">04:30 PM</option>
+                                <option value="17:00">05:00 PM</option>
+                                <option value="17:30">05:30 PM</option>
+                            </select>
+                            <div class="form-hint">Horarios disponibles de lunes a viernes</div>
+                            <div class="invalid-feedback" id="error-hora_cita"></div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">
+                                <i class="bi bi-chat-left-text"></i> Motivo de la Cita <span class="required">*</span>
+                            </label>
+                            <textarea class="form-control" name="motivo_cita" id="motivo_cita" 
+                                      placeholder="Describe el motivo de tu cita (problema, servicio requerido, etc.)" 
+                                      rows="4" maxlength="500" required></textarea>
+                            <div class="form-hint">Describe detalladamente el servicio que necesitas</div>
+                            <div class="invalid-feedback" id="error-motivo_cita"></div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">
+                                <i class="bi bi-journal-text"></i> Observaciones Adicionales
+                            </label>
+                            <textarea class="form-control" name="observaciones" id="observaciones" 
+                                      placeholder="Información adicional (opcional)" 
+                                      rows="3" maxlength="500"></textarea>
+                            <div class="form-hint">Información adicional que consideres importante</div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-calendar-check"></i> Agendar Cita
+                        </button>
+                    </form>
+                </div>
             </div>
-            <div class="modal-body" id="contenidoCitasDia"></div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+
+            <!-- Mis citas -->
+            <div class="citas-container">
+                <div class="container-header">
+                    <h3><i class="bi bi-list-check"></i> Mis Citas</h3>
+                </div>
+                <div class="container-content">
+                    <?php if (!empty($misCitas)): ?>
+                        <?php foreach ($misCitas as $cita): ?>
+                            <div class="cita-card">
+                                <div class="cita-header">
+                                    <div class="cita-fecha">
+                                        <i class="bi bi-calendar"></i> 
+                                        <?php echo date('d/m/Y', strtotime($cita['fecha_cita'])); ?>
+                                        <i class="bi bi-clock"></i> 
+                                        <?php echo date('H:i', strtotime($cita['hora_cita'])); ?>
+                                    </div>
+                                    <span class="status-badge status-<?php echo $cita['estado']; ?>">
+                                        <?php echo ucfirst($cita['estado']); ?>
+                                    </span>
+                                </div>
+                                <div class="cita-motivo">
+                                    <i class="bi bi-chat-left-text"></i> 
+                                    <?php echo htmlspecialchars($cita['motivo_cita']); ?>
+                                </div>
+                                <?php if (!empty($cita['observaciones'])): ?>
+                                    <div class="cita-motivo">
+                                        <i class="bi bi-info-circle"></i> 
+                                        <strong>Observaciones:</strong> <?php echo htmlspecialchars($cita['observaciones']); ?>
+                                    </div>
+                                <?php endif; ?>
+                                <small class="text-muted">
+                                    <i class="bi bi-calendar-plus"></i> 
+                                    Solicitada el <?php echo date('d/m/Y H:i', strtotime($cita['fecha_solicitud'])); ?>
+                                </small>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <div class="empty-state">
+                            <i class="bi bi-calendar-x"></i>
+                            <h4>No tienes citas agendadas</h4>
+                            <p>Agenda tu primera cita usando el formulario de la izquierda</p>
+                        </div>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
-    </div>
-</div>
-<!-- Modal para Agendar Cita (Cliente) -->
-<div class="modal fade" id="modalAgendarCita" tabindex="-1" aria-labelledby="modalAgendarCitaLabel" aria-hidden="true">
-    <div class="modal-dialog">
-        <form method="post" class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="modalAgendarCitaLabel">Agendar Nueva Cita</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
-            </div>
-            <div class="modal-body">
-                <input type="hidden" name="id_cliente" value="<?php echo $id_cliente ?? ''; ?>">
-                <input type="hidden" name="fecha" id="inputFechaCita">
 
-                <div class="mb-3">
-                    <label for="hora" class="form-label">Hora</label>
-                    <input type="time" name="hora" class="form-control" required min="07:00" max="18:00">
-                    <small class="text-muted">Horario disponible: 07:00 a 18:00</small>
+    <?php else: ?>
+        <!-- PANEL DE PERSONAL -->
+        <div class="main-container">
+            <!-- Citas pendientes -->
+            <div class="citas-container">
+                <div class="container-header">
+                    <h3><i class="bi bi-clock-history"></i> Citas Pendientes de Confirmación</h3>
                 </div>
+                <div class="container-content">
+                    <?php if (!empty($citas)): ?>
+                        <?php foreach ($citas as $cita): ?>
+                            <div class="cita-card">
+                                <div class="cita-header">
+                                    <div class="cita-cliente">
+                                        <i class="bi bi-person-circle"></i> 
+                                        <?php echo htmlspecialchars($cita['nombre_cliente']); ?>
+                                    </div>
+                                    <div class="cita-fecha">
+                                        <i class="bi bi-calendar"></i> 
+                                        <?php echo date('d/m/Y', strtotime($cita['fecha_cita'])); ?>
+                                        <i class="bi bi-clock"></i> 
+                                        <?php echo date('H:i', strtotime($cita['hora_cita'])); ?>
+                                    </div>
+                                </div>
+                                <div class="cita-motivo">
+                                    <i class="bi bi-chat-left-text"></i> 
+                                    <?php echo htmlspecialchars($cita['motivo_cita']); ?>
+                                </div>
+                                <?php if (!empty($cita['observaciones'])): ?>
+                                    <div class="cita-motivo">
+                                        <i class="bi bi-info-circle"></i> 
+                                        <strong>Observaciones:</strong> <?php echo htmlspecialchars($cita['observaciones']); ?>
+                                    </div>
+                                <?php endif; ?>
+                                <div class="cita-actions">
+                                    <form method="POST" style="display: inline;">
+                                        <input type="hidden" name="accion_cita" value="confirmar">
+                                        <input type="hidden" name="id_agendamiento" value="<?php echo $cita['id_agendamiento']; ?>">
+                                        <button type="submit" class="btn-action btn-confirmar">
+                                            <i class="bi bi-check-circle"></i> Confirmar
+                                        </button>
+                                    </form>
+                                    <form method="POST" style="display: inline;">
+                                        <input type="hidden" name="accion_cita" value="cancelar">
+                                        <input type="hidden" name="id_agendamiento" value="<?php echo $cita['id_agendamiento']; ?>">
+                                        <button type="submit" class="btn-action btn-cancelar" 
+                                                onclick="return confirm('¿Está seguro de cancelar esta cita?')">
+                                            <i class="bi bi-x-circle"></i> Cancelar
+                                        </button>
+                                    </form>
+                                </div>
+                                <small class="text-muted">
+                                    <i class="bi bi-telephone"></i> <?php echo htmlspecialchars($cita['telefono_cliente']); ?>
+                                    | <i class="bi bi-calendar-plus"></i> 
+                                    Solicitada el <?php echo date('d/m/Y H:i', strtotime($cita['fecha_solicitud'])); ?>
+                                </small>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <div class="empty-state">
+                            <i class="bi bi-check-circle"></i>
+                            <h4>No hay citas pendientes</h4>
+                            <p>Todas las citas han sido procesadas</p>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
 
-                <div class="mb-3">
-                    <label for="motivo" class="form-label">Motivo</label>
-                    <textarea name="motivo" class="form-control" rows="3" required></textarea>
+            <!-- Todas las citas -->
+            <div class="citas-container">
+                <div class="container-header">
+                    <h3><i class="bi bi-list-ul"></i> Todas las Citas</h3>
+                </div>
+                <div class="container-content">
+                    <?php if (!empty($todasLasCitas)): ?>
+                        <?php foreach (array_slice($todasLasCitas, 0, 10) as $cita): ?>
+                            <div class="cita-card">
+                                <div class="cita-header">
+                                    <div class="cita-cliente">
+                                        <i class="bi bi-person-circle"></i> 
+                                        <?php echo htmlspecialchars($cita['nombre_cliente']); ?>
+                                    </div>
+                                    <div class="cita-fecha">
+                                        <i class="bi bi-calendar"></i> 
+                                        <?php echo date('d/m/Y', strtotime($cita['fecha_cita'])); ?>
+                                        <i class="bi bi-clock"></i> 
+                                        <?php echo date('H:i', strtotime($cita['hora_cita'])); ?>
+                                    </div>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span class="status-badge status-<?php echo $cita['estado']; ?>">
+                                        <?php echo ucfirst($cita['estado']); ?>
+                                    </span>
+                                    <?php if ($cita['estado'] == 'confirmada'): ?>
+                                        <form method="POST" style="display: inline;">
+                                            <input type="hidden" name="accion_cita" value="completar">
+                                            <input type="hidden" name="id_agendamiento" value="<?php echo $cita['id_agendamiento']; ?>">
+                                            <button type="submit" class="btn-action btn-completar">
+                                                <i class="bi bi-check2-all"></i> Completar
+                                            </button>
+                                        </form>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                        <div class="text-center mt-3">
+                            <a href="index.php?pagina=tabla/historicocitas" class="btn btn-primary">
+                                Ver Historial Completo
+                            </a>
+                        </div>
+                    <?php else: ?>
+                        <div class="empty-state">
+                            <i class="bi bi-calendar-x"></i>
+                            <h4>No hay citas registradas</h4>
+                            <p>Las citas aparecerán aquí cuando los clientes las soliciten</p>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button type="submit" class="btn btn-primary">Solicitar Cita</button>
-            </div>
-        </form>
-    </div>
+        </div>
+    <?php endif; ?>
 </div>
+
 <script>
-    document.addEventListener("DOMContentLoaded", function () {
-        const esCliente = <?php echo $esClienteJS; ?>;
-        const tieneCitaActiva = <?php echo $tieneCitaActivaJS; ?>;
-        const esAdmin = <?php echo $esAdmin ? 'true' : 'false'; ?>;
-        const citas = <?php echo $citasJSON; ?>;
-        const calendarTitle = document.getElementById("calendar-title");
-        const calendar = document.getElementById("gridcalendar");
-        let currentDate = new Date();
-
-        function renderCalendar(date) {
-            const year = date.getFullYear();
-            const month = date.getMonth();
-            const today = new Date();
-            calendar.innerHTML = "";
-
-            const firstDay = new Date(year, month, 1).getDay();
-            const daysInMonth = new Date(year, month + 1, 0).getDate();
-            const daysInPrevMonth = new Date(year, month, 0).getDate();
-            calendarTitle.innerText = `${date.toLocaleString("es-ES", { month: "long" })} ${year}`;
-            const fechaHoy = new Date();
-            fechaHoy.setHours(0, 0, 0, 0);
-
-            for (let i = 0; i < 42; i++) {
-                const cell = document.createElement("div");
-                let dia, mes = month, anio = year;
-                let esDelMesActual = true;
-
-                if (i < firstDay) {
-                    dia = daysInPrevMonth - firstDay + i + 1;
-                    mes = month - 1;
-                    if (mes < 0) { mes = 11; anio -= 1; }
-                    esDelMesActual = false;
-                } else if (i >= firstDay + daysInMonth) {
-                    dia = i - (firstDay + daysInMonth) + 1;
-                    mes = month + 1;
-                    if (mes > 11) { mes = 0; anio += 1; }
-                    esDelMesActual = false;
-                } else {
-                    dia = i - firstDay + 1;
-                }
-
-                const fechaStr = `${anio}-${String(mes + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
-                const esHoy = fechaStr === today.toISOString().split('T')[0];
-                if (esHoy && esDelMesActual) {
-                    cell.classList.add("current-day");
-                }
-
-                const partes = fechaStr.split("-");
-                const fechaIterada = new Date(partes[0], partes[1] - 1, partes[2]);
-                fechaIterada.setHours(0, 0, 0, 0);
-
-                const cantidad = citas.filter(c => c.fecha === fechaStr && c.estado !== 'completado').length;
-
-                cell.innerHTML = `<strong>${dia}</strong>`;
-
-                if (esAdmin && cantidad > 0 && esDelMesActual) {
-                    const textoCitas = cantidad === 1 ? "1 cita pendiente" : `${cantidad} citas pendientes`;
-                    cell.innerHTML += `<div class='contador-citas'>${textoCitas}</div>`;
-                    cell.addEventListener("click", () => mostrarCitasDelDia(fechaStr));
-                }
-
-                if (esCliente && !tieneCitaActiva && esDelMesActual && fechaIterada >= fechaHoy) {
-                    const diaSemana = new Date(anio, mes, dia).getDay();
-                    if (diaSemana >= 1 && diaSemana <= 5) {
-                        cell.innerHTML += `<div class='contador-citas' style='background-color:#198754;'>Disponible</div>`;
-                        cell.addEventListener("click", () => agendarCita(fechaStr));
-                    }
-                }
-
-                calendar.appendChild(cell);
-            }
-        }
-
-        const formCita = document.querySelector("#modalAgendarCita form");
-        const inputFecha = document.getElementById("inputFechaCita");
-        const inputHora = formCita.querySelector('input[name="hora"]');
-
-        formCita.addEventListener("submit", function (e) {
-            const fechaSeleccionada = new Date(inputFecha.value);
-            const horaSeleccionada = inputHora.value;
-
-            const ahora = new Date();
-
-            // Si la fecha es hoy
-            if (fechaSeleccionada.toDateString() === ahora.toDateString()) {
-                const [horas, minutos] = horaSeleccionada.split(":");
-                const horaIngresada = new Date();
-                horaIngresada.setHours(parseInt(horas), parseInt(minutos), 0, 0);
-
-                if (horaIngresada < ahora) {
-                    e.preventDefault();
-                    Swal.fire({
-                        icon: "warning",
-                        title: "Hora no válida",
-                        text: "No puedes agendar una cita en una hora que ya pasó.",
-                        confirmButtonText: "Entendido"
-                    });
-                }
-            }
-        });
-
-        function mostrarCitasDelDia(fecha) {
-            const citasDelDia = citas.filter(c => c.fecha === fecha && c.estado !== 'completado');
-            const contenedor = document.getElementById("contenidoCitasDia");
-
-            if (!contenedor) return;
-
-            contenedor.innerHTML = "";
-
-            if (citasDelDia.length === 0) {
-                contenedor.innerHTML = '<p class="text-muted text-center">No hay citas para este día.</p>';
+    // Validación del formulario de cita
+    document.getElementById('formAgendarCita')?.addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const fecha = document.getElementById('fecha_cita').value;
+        const hora = document.getElementById('hora_cita').value;
+        const motivo = document.getElementById('motivo_cita').value.trim();
+        
+        let isValid = true;
+        
+        // Validar fecha
+        if (!fecha) {
+            document.getElementById('error-fecha_cita').textContent = 'La fecha es obligatoria';
+            document.getElementById('fecha_cita').classList.add('is-invalid');
+            isValid = false;
+        } else {
+            const fechaSeleccionada = new Date(fecha);
+            const hoy = new Date();
+            hoy.setHours(0, 0, 0, 0);
+            
+            if (fechaSeleccionada < hoy) {
+                document.getElementById('error-fecha_cita').textContent = 'La fecha debe ser futura';
+                document.getElementById('fecha_cita').classList.add('is-invalid');
+                isValid = false;
             } else {
-                citasDelDia.forEach(cita => {
-                    const div = document.createElement("div");
-                    div.className = "border rounded p-3 mb-3";
-                    div.innerHTML = `
-                    <p><strong>Cliente:</strong> ${cita.cliente}</p>
-                    <p><strong>Hora:</strong> ${cita.hora}</p>
-                    <p><strong>Motivo:</strong> ${cita.motivo}</p>
-                    <form method="post">
-                        <input type="hidden" name="id_completar" value="${cita.id_cita}">
-                        <button type="submit" class="btn btn-success btn-sm mt-2">Completar</button>
-                    </form>
-                `;
-                    contenedor.appendChild(div);
-                });
+                document.getElementById('error-fecha_cita').textContent = '';
+                document.getElementById('fecha_cita').classList.remove('is-invalid');
+                document.getElementById('fecha_cita').classList.add('is-valid');
             }
-
-            const modal = new bootstrap.Modal(document.getElementById("modalCitasDelDia"));
-            modal.show();
         }
-
-        function agendarCita(fecha) {
-            document.getElementById("inputFechaCita").value = fecha;
-            const modal = new bootstrap.Modal(document.getElementById("modalAgendarCita"));
-            modal.show();
+        
+        // Validar hora
+        if (!hora) {
+            document.getElementById('error-hora_cita').textContent = 'La hora es obligatoria';
+            document.getElementById('hora_cita').classList.add('is-invalid');
+            isValid = false;
+        } else {
+            document.getElementById('error-hora_cita').textContent = '';
+            document.getElementById('hora_cita').classList.remove('is-invalid');
+            document.getElementById('hora_cita').classList.add('is-valid');
         }
-        function prevMonth() {
-            currentDate.setMonth(currentDate.getMonth() - 1);
-            renderCalendar(currentDate);
+        
+        // Validar motivo
+        if (!motivo) {
+            document.getElementById('error-motivo_cita').textContent = 'El motivo es obligatorio';
+            document.getElementById('motivo_cita').classList.add('is-invalid');
+            isValid = false;
+        } else if (motivo.length < 10) {
+            document.getElementById('error-motivo_cita').textContent = 'El motivo debe tener al menos 10 caracteres';
+            document.getElementById('motivo_cita').classList.add('is-invalid');
+            isValid = false;
+        } else {
+            document.getElementById('error-motivo_cita').textContent = '';
+            document.getElementById('motivo_cita').classList.remove('is-invalid');
+            document.getElementById('motivo_cita').classList.add('is-valid');
         }
-        function nextMonth() {
-            currentDate.setMonth(currentDate.getMonth() + 1);
-            renderCalendar(currentDate);
+        
+        if (isValid) {
+            Swal.fire({
+                title: '¿Confirmar cita?',
+                text: `¿Deseas agendar la cita para el ${fecha} a las ${hora}?`,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: 'Sí, agendar',
+                cancelButtonText: 'Cancelar'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    this.submit();
+                }
+            });
+        } else {
+            Swal.fire({
+                title: 'Formulario incompleto',
+                text: 'Por favor, corrige los errores en el formulario',
+                icon: 'warning',
+                confirmButtonText: 'Aceptar'
+            });
         }
+    });
 
-        // Expone las funciones al HTML (botones onclick)
-        window.prevMonth = prevMonth;
-        window.nextMonth = nextMonth;
+    // Validación en tiempo real
+    document.getElementById('fecha_cita')?.addEventListener('change', function() {
+        const fecha = new Date(this.value);
+        const hoy = new Date();
+        const diaSemana = fecha.getDay();
+        
+        // Verificar que no sea fin de semana
+        if (diaSemana === 0 || diaSemana === 6) {
+            Swal.fire({
+                title: 'Fecha no disponible',
+                text: 'No atendemos los fines de semana. Por favor, selecciona un día de lunes a viernes.',
+                icon: 'warning',
+                confirmButtonText: 'Aceptar'
+            });
+            this.value = '';
+            return;
+        }
+        
+        // Verificar disponibilidad (aquí podrías hacer una consulta AJAX)
+        // Por ahora solo validamos que no sea pasada
+        if (fecha < hoy) {
+            this.classList.add('is-invalid');
+            document.getElementById('error-fecha_cita').textContent = 'La fecha debe ser futura';
+        } else {
+            this.classList.remove('is-invalid');
+            this.classList.add('is-valid');
+            document.getElementById('error-fecha_cita').textContent = '';
+        }
+    });
 
-        renderCalendar(currentDate);
+    // Animaciones de entrada
+    document.addEventListener('DOMContentLoaded', function() {
+        const cards = document.querySelectorAll('.cita-card');
+        cards.forEach((card, index) => {
+            card.style.opacity = '0';
+            card.style.transform = 'translateY(20px)';
+            
+            setTimeout(() => {
+                card.style.transition = 'all 0.5s ease';
+                card.style.opacity = '1';
+                card.style.transform = 'translateY(0)';
+            }, index * 100);
+        });
     });
 </script>
